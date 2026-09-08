@@ -1,54 +1,89 @@
-import React, { useState } from "react";
-import axios from "axios";
+import { useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import api, { errorMessage } from '../lib/api';
+import { useAuth } from '../hooks/useAuth';
+import { useToast } from '../hooks/useToast';
+import Field from '../components/Field';
+import FormError from '../components/FormError';
 
 function Login() {
-  const [form, setForm] = useState({
-    aadharCardNumber: "",
-    password: "",
-  });
+  const [form, setForm] = useState({ aadharCardNumber: '', password: '' });
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const { login } = useAuth();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    setForm((current) => ({ ...current, [e.target.name]: e.target.value }));
+    setError('');
   };
 
-  const handleLogin = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
+
+    setSubmitting(true);
+    setError('');
+
     try {
-      const res = await axios.post("http://localhost:8000/user/login", form, {
-        headers: { "Content-Type": "application/json" }
-      });
-
-     localStorage.setItem("token", res.data.token);
-
-      alert("Login Successful!");
-      console.log(res.data);
+      const { data } = await api.post('/user/login', form);
+      login(data.token, data.user);
+      toast(`Welcome back, ${data.user?.name?.split(' ')[0] || 'voter'}!`, 'success');
+      navigate(location.state?.from || '/vote', { replace: true });
     } catch (err) {
-      alert("Login Failed");
-      console.error(err);
+      setError(errorMessage(err, 'Could not sign you in.'));
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="form-box" style={{ padding: 30 }}>
-      <h2>Login</h2>
+    <div className="page-narrow">
+      <div className="auth-card">
+        <div className="auth-head">
+          <h2>Welcome back</h2>
+          <p>Sign in to cast or review your vote.</p>
+        </div>
 
-      <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <input
-          name="aadharCardNumber"
-          type="text"
-          placeholder="Aadhar Number"
-          onChange={handleChange}
-        />
+        <form className="form" onSubmit={handleSubmit} noValidate>
+          <FormError>{error}</FormError>
 
-        <input
-          name="password"
-          type="password"
-          placeholder="Password"
-          onChange={handleChange}
-        />
+          <Field
+            label="Aadhar number"
+            name="aadharCardNumber"
+            type="text"
+            inputMode="numeric"
+            autoComplete="username"
+            placeholder="1234 5678 9012"
+            value={form.aadharCardNumber}
+            onChange={handleChange}
+            required
+          />
 
-        <button type="submit" style={{ padding: 10, cursor: "pointer" }}>Login</button>
-      </form>
+          <Field
+            label="Password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Enter your password"
+            value={form.password}
+            onChange={handleChange}
+            required
+          />
+
+          <button type="submit" className="btn btn-primary btn-block btn-lg" disabled={submitting}>
+            {submitting ? <span className="spinner" /> : null}
+            {submitting ? 'Signing in...' : 'Sign in'}
+          </button>
+        </form>
+
+        <div className="auth-foot">
+          New here? <Link to="/signup">Create an account</Link>
+        </div>
+      </div>
     </div>
   );
 }

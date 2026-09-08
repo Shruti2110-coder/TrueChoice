@@ -2,162 +2,183 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const { jwtAuthMiddleware } = require('../jwt');
-const Candidate = require("../models/candidate");
+const Candidate = require('../models/candidate');
 
 // check admin role
 const checkAdminRole = async (userId) => {
     try {
         const user = await User.findById(userId);
-        return user.roles === 'admin';
+        return Boolean(user) && user.roles === 'admin';
     } catch (err) {
+        console.error(err);
         return false;
     }
 };
 
+// Guard for the admin-only routes
+const requireAdmin = async (req, res, next) => {
+    if (!(await checkAdminRole(req.user.id))) {
+        return res.status(403).json({ error: 'User does not have the admin role' });
+    }
+    next();
+};
 
-// GET ALL CANDIDATES (for frontend voting page)
-router.get('/', async (req, res) => {
-  try {
-    const candidates = await Candidate.find();
-    res.status(200).json(candidates);
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: 'internal server error' });
-  }
+// LIVE VOTE COUNT - must stay above '/:candidateID' style routes
+router.get('/vote/count', async (req, res) => {
+    try {
+        const candidates = await Candidate.find().sort({ voteCount: -1 });
+
+        const record = candidates.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            party: candidate.party,
+            count: candidate.voteCount
+        }));
+
+        res.status(200).json(record);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
 });
 
+// GET ALL CANDIDATES
+router.get('/', async (req, res) => {
+    try {
+        const candidates = await Candidate.find().sort({ createdAt: 1 });
+        res.status(200).json(candidates);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
 
 // ADD CANDIDATE
-router.post('/', jwtAuthMiddleware, async (req, res) => {
+router.post('/', jwtAuthMiddleware, requireAdmin, async (req, res) => {
     try {
-        if (!await checkAdminRole(req.user.id))
-            return res.status(403).json({ message: 'user does not have admin role' });
+        const { name, party, age } = req.body;
 
-        const data = req.body;
-        const newCandidate = new Candidate(data);
-
+        // Never trust votes/voteCount from the request body
+        const newCandidate = new Candidate({ name, party, age });
         const response = await newCandidate.save();
-        res.status(200).json({ response });
 
+        res.status(201).json(response);
     } catch (err) {
-        console.log(err);
-        res.status(500).json({ error: 'internal server error' });
+        if (err.name === 'ValidationError' || err.name === 'CastError') {
+            return res.status(400).json({ error: err.message });
+        }
+
+        console.error(err);
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 
 // UPDATE CANDIDATE
-router.put('/:candidateID', jwtAuthMiddleware, async (req, res) => {
+router.put('/:candidateID', jwtAuthMiddleware, requireAdmin, async (req, res) => {
     try {
-        if (!await checkAdminRole(req.user.id))
-            return res.status(403).json({ message: 'user does not have admin role' });
+        // Only apply the fields that were actually sent (omitUndefined was
+        // removed in Mongoose 6, so build the update ourselves)
+        const updates = {};
+        for (const field of ['name', 'party', 'age']) {
+            if (req.body[field] !== undefined) updates[field] = req.body[field];
+        }
 
-        const candidateID = req.params.candidateID;
-        const updatedData = req.body;
+        if (Object.keys(updates).length === 0) {
+            return res.status(400).json({ error: 'Nothing to update' });
+        }
 
-        const response = await Candidate.findByIdAndUpdate(candidateID, updatedData, {
-            new: true,
-            runValidators: true,
-        });
+        const response = await Candidate.findByIdAndUpdate(
+            req.params.candidateID,
+            { $set: updates },
+            { new: true, runValidators: true }
+        );
 
         if (!response) {
             return res.status(404).json({ error: 'Candidate not found' });
         }
 
         res.status(200).json(response);
-
     } catch (err) {
-        console.log(err);
+        if (err.name === 'ValidationError' || err.name === 'CastError') {
+            return res.status(400).json({ error: err.message });
+        }
+
+        console.error(err);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 
 // DELETE CANDIDATE
-router.delete('/:candidateID', jwtAuthMiddleware, async (req, res) => {
+router.delete('/:candidateID', jwtAuthMiddleware, requireAdmin, async (req, res) => {
     try {
-        if (!await checkAdminRole(req.user.id))
-            return res.status(403).json({ message: 'user does not have admin role' });
-
-        const candidateID = req.params.candidateID;
-        const response = await Candidate.findByIdAndDelete(candidateID);
+        const response = await Candidate.findByIdAndDelete(req.params.candidateID);
 
         if (!response) {
             return res.status(404).json({ error: 'Candidate not found' });
         }
 
         res.status(200).json(response);
-
     } catch (err) {
-        console.log(err);
+        if (err.name === 'CastError') {
+            return res.status(400).json({ error: 'Invalid candidate id' });
+        }
+
+        console.error(err);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 
-// VOTE ROUTE
+// VOTE
 router.post('/vote/:candidateID', jwtAuthMiddleware, async (req, res) => {
-    try {
-        const candidateID = req.params.candidateID;
-        const userId = req.user.id;
+    const candidateID = req.params.candidateID;
+    const userId = req.user.id;
 
-        // find candidate
+    try {
         const candidate = await Candidate.findById(candidateID);
         if (!candidate) {
-            return res.status(404).json({ message: 'candidate not found' });
+            return res.status(404).json({ error: 'Candidate not found' });
         }
 
-        // find user
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: 'user not found' });
-        }
+        // Claim the user's single vote atomically, so two concurrent requests
+        // can't both pass an "already voted?" check and vote twice.
+        const claimed = await User.findOneAndUpdate(
+            { _id: userId, isVoted: false, roles: { $ne: 'admin' } },
+            { $set: { isVoted: true, votedFor: candidateID } },
+            { new: true }
+        );
 
-        // admin cannot vote
-        if (user.roles === 'admin') {
-            return res.status(403).json({ message: 'admin cannot vote' });
-        }
+        if (!claimed) {
+            const user = await User.findById(userId);
 
-        // user can vote once
-        if (user.isVoted) {
-            return res.status(400).json({ message: 'you have already voted' });
-        }
-
-        // update candidate vote
-        candidate.votes.push({ user: userId });
-        candidate.voteCount++;
-        await candidate.save();
-
-        // update user
-        user.isVoted = true;
-        user.votedFor = candidateID;
-        await user.save();
-
-        res.json({ message: 'vote submitted', candidate });
-
-    } catch (err) {
-        console.log(err);
-        res.status(500).json({ error: 'internal server error' });
-    }
-});
-
-// vote count
-
-router.get('/vote/count', async (req ,res)=>
-{
-    try{
-        const candidate = await Candidate.find().sort({voteCount: -1 });
-
-        const record = candidate.map((data)=>{
-
-        
-            return {
-                party: data.party,
-                count: data.voteCount
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
             }
-    });
+            if (user.roles === 'admin') {
+                return res.status(403).json({ error: 'An admin cannot vote' });
+            }
+            return res.status(409).json({ error: 'You have already voted' });
+        }
 
-    return res.status(200).json(record)
-    }catch(err){
-        console.log(err);
-        res.status(500).json({error: 'Internal server error'});
+        const updatedCandidate = await Candidate.findByIdAndUpdate(
+            candidateID,
+            { $push: { votes: { user: userId } }, $inc: { voteCount: 1 } },
+            { new: true }
+        );
+
+        // Candidate disappeared between the two writes - give the user their vote back
+        if (!updatedCandidate) {
+            await User.updateOne({ _id: userId }, { $set: { isVoted: false, votedFor: null } });
+            return res.status(404).json({ error: 'Candidate not found' });
+        }
+
+        res.status(200).json({ message: 'Vote submitted', candidate: updatedCandidate });
+    } catch (err) {
+        if (err.name === 'CastError') {
+            return res.status(400).json({ error: 'Invalid candidate id' });
+        }
+
+        console.error(err);
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 

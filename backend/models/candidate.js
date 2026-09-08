@@ -1,20 +1,17 @@
 const mongoose = require('mongoose');
 
 const candidateSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    party: { type: String, required: true },
+    name: { type: String, required: true, trim: true },
+    party: { type: String, required: true, trim: true },
     age: { type: Number, required: true },
 
-    // add these 👇
     votes: [
         {
-            user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+            user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+            votedAt: { type: Date, default: Date.now }
         }
     ],
     voteCount: { type: Number, default: 0 }
-});
+}, { timestamps: true });
 
-const Candidate = mongoose.models.Candidate || mongoose.model('Candidate', candidateSchema);
-
-module.exports = Candidate;
-
+module.exports = mongoose.models.Candidate || mongoose.model('Candidate', candidateSchema);
